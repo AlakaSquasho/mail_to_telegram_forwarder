@@ -42,14 +42,19 @@ export default {
     }
 
     // 2. 获取基础信息
-    const originalSender = message.headers.get("From") || message.from;
-    const subject = message.headers.get("subject") || "(No Subject)";
+    let originalSender = message.headers.get("From") || message.from;
+    let subject = message.headers.get("subject") || "(No Subject)";
+    
+    // 增加：自动解码 RFC 2047 格式的标题和发件人名称 (处理中文 Base64/QP 编码)
+    originalSender = decodeRFC2047(originalSender);
+    subject = decodeRFC2047(subject);
+
     const recipientEmail = getRealRecipientEmail(message);
 
     console.log(`Processing email from: ${originalSender} to: ${recipientEmail}`);
 
     // 3. 提取内容
-    const MAX_BYTES = 128 * 1024; // 提升读取上限到 128KB 以应对大邮件
+    const MAX_BYTES = 1024 * 1024; // 提升读取上限到 1MB 以应对大邮件
     let rawBody = "";
 
     try {
@@ -73,7 +78,8 @@ export default {
 
     // 4. 解析并清理内容
     const contentType = message.headers.get("Content-Type") || "";
-    const parsedContent = parseEmailContent(rawBody, contentType);
+    const rootEncoding = message.headers.get("Content-Transfer-Encoding") || "";
+    const parsedContent = parseEmailContent(rawBody, contentType, rootEncoding);
     let cleanContent = parsedContent.text || stripHtml(parsedContent.html) || "[No readable text found]";
 
     // 截断内容，保留足够空间给头部信息 (Telegram限制4096，预留1000给Header，正文留3000)
@@ -296,7 +302,7 @@ function parseEmailBody(rawContent, mainContentType) {
   return parsed.text || stripHtml(parsed.html) || "[No readable text found]";
 }
 
-function parseEmailContent(rawContent, mainContentType) {
+function parseEmailContent(rawContent, mainContentType, rootEncoding = "") {
   // 1. 分离 Header 和 Body
   const { headersBlock, bodyBlock } = splitHeadersAndBody(rawContent);
   if (!headersBlock) {
@@ -306,8 +312,8 @@ function parseEmailContent(rawContent, mainContentType) {
     return { html: "", text: stripHtml(rawContent).trim() };
   }
 
-  // 2. 检测传输编码 (Transfer-Encoding)
-  const transferEncoding = getHeaderValue(headersBlock, "Content-Transfer-Encoding");
+  // 2. 检测传输编码 (当前块没有时，回退使用根节点的 Encoding)
+  const transferEncoding = getHeaderValue(headersBlock, "Content-Transfer-Encoding") || rootEncoding;
 
   // 3. 处理 Multipart
   if (mainContentType.includes("multipart/")) {
@@ -347,7 +353,6 @@ function extractContentFromMultipart(fullBody, boundary) {
   let htmlPart = "";
   let textPart = "";
 
-  // 遍历所有部分，寻找 text/plain 和 text/html
   for (const part of parts) {
     if (part.trim().length < 5 || part.trim() === "--") continue; // 忽略结束符
 
@@ -356,7 +361,13 @@ function extractContentFromMultipart(fullBody, boundary) {
 
     const type = getHeaderValue(headersBlock, "Content-Type") || "";
     const encoding = getHeaderValue(headersBlock, "Content-Transfer-Encoding");
-    const decoded = decodeTransferEncoding(bodyBlock, encoding);
+    
+    // 【新增】智能提取字符集
+    const charsetMatch = type.match(/charset=["']?([\w-]+)["']?/i);
+    const charset = charsetMatch ? charsetMatch[1] : "utf-8";
+
+    // 传入 charset 进行精准解码
+    const decoded = decodeTransferEncoding(bodyBlock, encoding, charset);
 
     if (type.includes("text/plain")) {
       textPart += decoded.trim();
@@ -365,7 +376,6 @@ function extractContentFromMultipart(fullBody, boundary) {
     }
   }
 
-  // 优先返回纯文本，如果没有则返回处理过的 HTML
   return {
     html: htmlPart.trim(),
     text: textPart.trim() || stripHtml(htmlPart).trim(),
@@ -384,7 +394,11 @@ function decodeAndClean(content, encoding, contentType) {
 }
 
 function decodeEmailPart(content, encoding, contentType) {
-  const decoded = decodeTransferEncoding(content, encoding);
+  // 【新增】智能提取字符集
+  const charsetMatch = (contentType || "").match(/charset=["']?([\w-]+)["']?/i);
+  const charset = charsetMatch ? charsetMatch[1] : "utf-8";
+
+  const decoded = decodeTransferEncoding(content, encoding, charset);
 
   if (contentType && contentType.includes("text/html")) {
     return {
@@ -399,13 +413,24 @@ function decodeEmailPart(content, encoding, contentType) {
   };
 }
 
-function decodeTransferEncoding(content, encoding) {
-  if (encoding && encoding.toLowerCase().includes("base64")) {
-    return decodeBase64(content);
+function decodeTransferEncoding(content, encoding, charset = "utf-8") {
+  const encLower = (encoding || "").toLowerCase();
+
+  if (encLower.includes("base64")) {
+    return decodeBase64(content, charset);
   }
 
-  if (encoding && encoding.toLowerCase().includes("quoted-printable")) {
-    return decodeQuotedPrintable(content);
+  if (encLower.includes("quoted-printable")) {
+    return decodeQuotedPrintable(content, charset);
+  }
+
+  // 【新增核心修复】启发式检测 Quoted-Printable
+  if (!encLower) {
+    // 特征：如果正文中包含 "=3D" (HTML中常见的 =' 等号被转义) 或者是 "=E4" 的十六进制，并含有软换行 "=\r\n"
+    const looksLikeQP = (content.includes("=3D") || /=[0-9A-F]{2}/i.test(content)) && /=\r?\n/.test(content);
+    if (looksLikeQP) {
+      return decodeQuotedPrintable(content, charset);
+    }
   }
 
   return content;
@@ -440,15 +465,42 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;");
 }
 
-// 鲁棒的 Base64 解码
-function decodeBase64(str) {
+// 解码邮件头中的 RFC 2047 编码 (例如 =?UTF-8?B?...?=)
+function decodeRFC2047(text) {
+  if (!text) return "";
+  // 移除相邻编码词之间的多余空格（符合 RFC 2047 规范）
+  let processedText = text.replace(/\?=\s+=\?/g, "?==?");
+
+  return processedText.replace(/=\?([\w-]+)\?([B|Q|b|q])\?([^?]+)\?=/g, (match, charset, encoding, data) => {
+    try {
+      if (encoding.toUpperCase() === "B") {
+        return decodeBase64(data, charset);
+      } else if (encoding.toUpperCase() === "Q") {
+        // RFC 2047 的 Q 编码中，下划线 '_' 代表空格
+        const qData = data.replace(/_/g, " ");
+        return decodeQuotedPrintable(qData, charset);
+      }
+      return match;
+    } catch (e) {
+      return match;
+    }
+  });
+}
+
+// 鲁棒的 Base64 解码 (增加了对指定字符集的支持)
+function decodeBase64(str, charset = "utf-8") {
   try {
-    // 移除所有非 Base64 字符（如换行）
     const clean = str.replace(/[^A-Za-z0-9+/=]/g, "");
     const binary = atob(clean);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return new TextDecoder("utf-8").decode(bytes);
+    
+    // 尝试使用邮件头声明的字符集，如果不支持则回退到 utf-8
+    let decoder;
+    try { decoder = new TextDecoder(charset.toLowerCase()); } 
+    catch (e) { decoder = new TextDecoder("utf-8"); }
+    
+    return decoder.decode(bytes);
   } catch (e) {
     return `[Base64 Decode Error]`;
   }
@@ -461,15 +513,28 @@ function base64ToUint8Array(str) {
   return bytes;
 }
 
-// Quoted-Printable 解码
-function decodeQuotedPrintable(str) {
+// Quoted-Printable 解码 (修复了原生对多字节中文字符解析乱码的问题)
+function decodeQuotedPrintable(str, charset = "utf-8") {
   try {
-    return str.replace(/=\r?\n/g, "")
-              .replace(/=([a-fA-F0-9]{2})/g, (match, hex) =>
-                String.fromCharCode(parseInt(hex, 16))
-              );
-    // 注意：这里简单的解码可能无法处理多字节字符（UTF-8 QP），
-    // 但在无第三方库环境下这是最安全的折衷方案。
+    const cleanStr = str.replace(/=\r?\n/g, ""); // 移除软换行
+    const bytes = [];
+    for (let i = 0; i < cleanStr.length; i++) {
+      if (cleanStr[i] === "=" && i + 2 < cleanStr.length) {
+        const hex = cleanStr.substring(i + 1, i + 3);
+        if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+          bytes.push(parseInt(hex, 16));
+          i += 2;
+          continue;
+        }
+      }
+      bytes.push(cleanStr.charCodeAt(i));
+    }
+
+    let decoder;
+    try { decoder = new TextDecoder(charset.toLowerCase()); } 
+    catch (e) { decoder = new TextDecoder("utf-8"); }
+    
+    return decoder.decode(new Uint8Array(bytes));
   } catch (e) {
     return str;
   }
