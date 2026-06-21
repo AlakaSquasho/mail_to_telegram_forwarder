@@ -1,0 +1,13 @@
+{
+  "name": "email-renderer",
+  "version": "1.0.0",
+  "description": "Render email HTML to Image",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "puppeteer": "latest"
+  }
+}

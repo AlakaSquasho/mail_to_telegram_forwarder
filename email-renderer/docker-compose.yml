@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  email-renderer:
+    build: .
+    container_name: email-renderer
+    restart: unless-stopped
+    ports:
+      - "6733:3000" # 将主机 6733 端口映射到容器 3000 端口
+    environment:
+      - PORT=3000
+      - AUTH_TOKEN=5xe62m4CGnRBRrXkYV8u5P #【必改】请修改为一个随机的长字符串
+    # 建议加上内存限制，Chromium 相对吃内存，给 512M 足以应对偶尔的邮件渲染
+    deploy:
+      resources:
+        limits:
+          memory: 512M
