@@ -61,6 +61,15 @@ app.post('/', async (req, res) => {
             timeout: 10000 
         });
 
+        // ================= 优雅修复：等待 Web 字体加载 =================
+        // 让浏览器等待外部字体加载（如 Google Sans），最多等 3 秒。
+        // 如果 3 秒后外部字体还没下载完（网络卡顿），浏览器会自动放弃等待并显示本地后备字体，这样截图就不会是空白了。
+        await Promise.race([
+            page.evaluate(() => document.fonts.ready),
+            new Promise(resolve => setTimeout(resolve, 3000))
+        ]);
+        // ===============================================================
+
         // 强制设置白色背景 (有些邮件 HTML 没写背景色，默认会变成透明导致字看不清)
         await page.evaluate(() => {
             document.body.style.backgroundColor = 'white';

@@ -1,9 +1,9 @@
 FROM node:20-slim
 
-# 更新源并安装 Chromium 以及中文字体包
+# 安装 Chromium，并替换为 Noto CJK (完美支持各种字重) 和 Emoji 字体
 RUN apt-get update && apt-get install -y \
     chromium \
-    fonts-ipafont-gothic fonts-wqy-zenhei fonts-thai-tlwg fonts-kacst fonts-freefont-ttf \
+    fonts-noto-cjk fonts-noto-color-emoji \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
