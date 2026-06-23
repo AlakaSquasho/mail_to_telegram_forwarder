@@ -513,12 +513,15 @@ function base64ToUint8Array(str) {
   return bytes;
 }
 
-// Quoted-Printable 解码 (修复了原生对多字节中文字符解析乱码的问题)
+// Quoted-Printable 解码 (终极修复版：完美兼容原生 Emoji 和多字节隐藏字符)
 function decodeQuotedPrintable(str, charset = "utf-8") {
   try {
     const cleanStr = str.replace(/=\r?\n/g, ""); // 移除软换行
     const bytes = [];
+    const encoder = new TextEncoder(); // 用于将原生字符安全编码为 UTF-8 字节流
+    
     for (let i = 0; i < cleanStr.length; i++) {
+      // 处理标准的 =XX 转义序列
       if (cleanStr[i] === "=" && i + 2 < cleanStr.length) {
         const hex = cleanStr.substring(i + 1, i + 3);
         if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
@@ -527,16 +530,30 @@ function decodeQuotedPrintable(str, charset = "utf-8") {
           continue;
         }
       }
-      bytes.push(cleanStr.charCodeAt(i));
+      
+      // 处理未转义的普通字符或原生多字节字符 (中文、Emoji、隐藏控制符等)
+      const codePoint = cleanStr.codePointAt(i);
+      const char = String.fromCodePoint(codePoint);
+      const charBytes = encoder.encode(char);
+      
+      for (let j = 0; j < charBytes.length; j++) {
+        bytes.push(charBytes[j]);
+      }
+      
+      // 如果是占用 4 个字节的 Surrogate Pair (如 Emoji)，需要跳过半个字符
+      if (codePoint > 0xFFFF) {
+        i++; 
+      }
     }
 
+    // 将组装好的纯净字节流还原为字符串
     let decoder;
     try { decoder = new TextDecoder(charset.toLowerCase()); } 
     catch (e) { decoder = new TextDecoder("utf-8"); }
     
     return decoder.decode(new Uint8Array(bytes));
   } catch (e) {
-    return str;
+    return str; // 如果发生极其罕见的错误，原样返回保底
   }
 }
 
