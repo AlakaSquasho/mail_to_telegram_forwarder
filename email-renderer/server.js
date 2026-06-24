@@ -53,7 +53,12 @@ app.post('/', async (req, res) => {
         page = await browser.newPage();
         
         // 设置一个友好的移动端/平板宽度（对 Telegram 图片预览比较友好）
-        await page.setViewport({ width: 800, height: 600 });
+        await page.setViewport({ 
+            width: 800, 
+            height: 600, 
+            // 设置高分屏渲染，避免截图模糊
+            deviceScaleFactor: 2
+        });
 
         // 4. 注入 HTML 内容，等待内容加载完毕 (最多等 10 秒，避免死锁)
         await page.setContent(contentToRender, { 

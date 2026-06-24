@@ -9,6 +9,8 @@
  * @property {string=} EMAIL_OUTPUT_MODE text/image，默认 text
  * @property {string=} EMAIL_RENDER_SERVICE_URL image 模式下使用的外部渲染服务地址
  * @property {string=} EMAIL_RENDER_SERVICE_TOKEN 可选，调用外部渲染服务时使用的 Bearer Token
+ * @property {string=} IMAGE_MAX_DIMENSION 可选，图片模式下的最大宽高限制，超过则发送为文件，默认 3000
+ * @property {string=} IMAGE_MAX_FILESIZE 可选，图片模式下的最大文件大小限制，超过则发送为文件，默认 2.5MB
  */
 
 /**
@@ -260,12 +262,39 @@ async function sendToTelegram(env, text, parseMode) {
 }
 
 async function sendPhotoToTelegram(env, image, caption) {
-  const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendPhoto`;
+  // 1. 获取图片实际尺寸
+  const dimensions = getImageDimensions(image.bytes, image.mimeType);
+  
+  // 2. 判断发送策略（设置阈值为长或宽 3000 像素）
+  // Telegram 如果高度超长，会严重压缩模糊，这里一旦超过就转为文件
+  const MAX_DIMENSION = env.IMAGE_MAX_DIMENSION ? parseInt(env.IMAGE_MAX_DIMENSION) : 3000;
+  const MAX_FILESIZE = env.IMAGE_MAX_FILESIZE ? parseInt(env.IMAGE_MAX_FILESIZE) : 2.5 * 1024 * 1024;
+  let sendAsDocument = false;
+
+  if (dimensions) {
+    console.log(`Rendered Image Size: ${dimensions.width} x ${dimensions.height}`);
+    if (dimensions.width > MAX_DIMENSION || dimensions.height > MAX_DIMENSION) {
+      sendAsDocument = true;
+    }
+  } else {
+    // 降级方案：如果尺寸解析失败，但文件超过 2.5MB，也保守视为长图发送
+    if (image.bytes.byteLength > MAX_FILESIZE) {
+      sendAsDocument = true;
+    }
+  }
+
+  // 3. 根据判断结果，动态选择发送的 API 路径和表单字段名
+  const apiMethod = sendAsDocument ? "sendDocument" : "sendPhoto";
+  const fieldName = sendAsDocument ? "document" : "photo";
+
+  console.log(`Sending to Telegram via: ${apiMethod}`);
+
+  const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${apiMethod}`;
   const formData = new FormData();
   const extension = getImageExtension(image.mimeType);
 
   formData.append("chat_id", env.TELEGRAM_CHAT_ID);
-  formData.append("photo", new Blob([image.bytes], { type: image.mimeType }), `email.${extension}`);
+  formData.append(fieldName, new Blob([image.bytes], { type: image.mimeType }), `email.${extension}`);
   formData.append("caption", caption);
   formData.append("parse_mode", "HTML");
 
@@ -276,7 +305,7 @@ async function sendPhotoToTelegram(env, image, caption) {
 
   if (!response.ok) {
     const err = await response.text();
-    throw new Error(`TG Photo API Error ${response.status}: ${err}`);
+    throw new Error(`TG ${apiMethod} API Error ${response.status}: ${err}`);
   }
 }
 
@@ -584,4 +613,40 @@ function escapeMarkdown(text) {
 function escapeCodeBlock(text) {
   if (!text) return "";
   return text.replace(/`/g, '\\`').replace(/\\/g, '\\\\');
+}
+
+// 直接从图片的 Uint8Array 字节流中提取长宽尺寸
+function getImageDimensions(bytes, mimeType) {
+  try {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+    if (mimeType === "image/png") {
+      // PNG 的宽和高固定在第 16 和 20 字节，采用大端序读取 (Big-Endian)
+      return {
+        width: dv.getUint32(16, false),
+        height: dv.getUint32(20, false)
+      };
+    }
+
+    if (mimeType === "image/jpeg") {
+      let offset = 2;
+      while (offset < bytes.length) {
+        if (bytes[offset] !== 0xFF) break;
+        while (bytes[offset] === 0xFF) offset++; // 跳过填充
+        const marker = bytes[offset++];
+        const length = dv.getUint16(offset, false);
+        // 匹配 SOFn (Start Of Frame) 标记，里面包含了高度和宽度
+        if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+          return {
+            height: dv.getUint16(offset + 3, false),
+            width: dv.getUint16(offset + 5, false)
+          };
+        }
+        offset += length;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to parse image dimensions", e);
+  }
+  return null;
 }
