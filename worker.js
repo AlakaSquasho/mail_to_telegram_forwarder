@@ -382,6 +382,7 @@ function extractContentFromMultipart(fullBody, boundary) {
   let htmlPart = "";
   let textPart = "";
 
+  // 遍历所有部分，寻找 text/plain、text/html 以及嵌套的 multipart
   for (const part of parts) {
     if (part.trim().length < 5 || part.trim() === "--") continue; // 忽略结束符
 
@@ -390,18 +391,29 @@ function extractContentFromMultipart(fullBody, boundary) {
 
     const type = getHeaderValue(headersBlock, "Content-Type") || "";
     const encoding = getHeaderValue(headersBlock, "Content-Transfer-Encoding");
-    
-    // 【新增】智能提取字符集
+
+    // ====================================================================
+    // 【核心修复】递归处理嵌套的 multipart
+    // ====================================================================
+    if (type.toLowerCase().includes("multipart/")) {
+      // 将当前整个 part (包含 headers 和 body) 作为独立的邮件结构继续向下解析
+      const nestedContent = parseEmailContent(part.trim(), type, encoding);
+      if (nestedContent.html) htmlPart += nestedContent.html + "\n";
+      if (nestedContent.text) textPart += nestedContent.text + "\n";
+      continue;
+    }
+
+    // 处理普通的文本或 HTML 节点
     const charsetMatch = type.match(/charset=["']?([\w-]+)["']?/i);
     const charset = charsetMatch ? charsetMatch[1] : "utf-8";
 
     // 传入 charset 进行精准解码
     const decoded = decodeTransferEncoding(bodyBlock, encoding, charset);
 
-    if (type.includes("text/plain")) {
-      textPart += decoded.trim();
-    } else if (type.includes("text/html")) {
-      htmlPart += decoded.trim();
+    if (type.toLowerCase().includes("text/plain")) {
+      textPart += decoded.trim() + "\n";
+    } else if (type.toLowerCase().includes("text/html")) {
+      htmlPart += decoded.trim() + "\n";
     }
   }
 
