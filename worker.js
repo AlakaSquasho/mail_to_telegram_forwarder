@@ -120,12 +120,14 @@ function getOutputMode(env) {
 /**
  * 发送通知，采用三级降级策略：MarkdownV2 -> HTML -> 纯文本
  */
-async function sendNotification(env, from, to, subject, body) {
+async function sendNotification(env, from, to, subject, body, warn) {
   // --- 尝试 1: MarkdownV2 (最美观，但对特殊字符最敏感) ---
   try {
+    const warnLine = warn ? `*Warn:* \`${escapeMarkdown(warn)}\`` : "";
     const header = `📬 *New Email* to \`${escapeMarkdown(to)}\`\n` +
                    `*From:* \`${escapeMarkdown(from)}\`\n` +
                    `*Subject:* \`${escapeMarkdown(subject)}\`\n` +
+                   warnLine +
                    `━━━━━━━━━━━━━━━━━━\n`;
 
     // 使用代码块包裹正文，最安全
@@ -145,10 +147,13 @@ async function sendNotification(env, from, to, subject, body) {
     const safeFrom = escapeHtml(from);
     const safeSubject = escapeHtml(subject);
     const safeBody = escapeHtml(body);
+    const safeWarn = warn ? escapeHtml(warn) : "";
 
+    const warnLine = safeWarn ? `<b>Warn:</b> <code>${safeWarn}</code>` : "";
     const htmlMsg = `<b>📬 New Email to</b> <code>${safeTo}</code>\n` +
                     `<b>From:</b> <code>${safeFrom}</code>\n` +
                     `<b>Subject:</b> <code>${safeSubject}</code>\n` +
+                    warnLine +
                     `━━━━━━━━━━━━━━━━━━\n` +
                     `<pre>${safeBody}</pre>`; // <pre> 标签保留换行符
 
@@ -160,9 +165,11 @@ async function sendNotification(env, from, to, subject, body) {
   }
 
   // --- 尝试 3: 纯文本 (保底方案，肯定能发出去) ---
+  const warnLine = warn ? `Warn: ${warn}` : "";
   const plainText = `📬 New Email to ${to}\n` +
                     `From: ${from}\n` +
                     `Subject: ${subject}\n` +
+                    warnLine +
                     `------------------\n` +
                     body;
 
@@ -184,8 +191,9 @@ async function sendImageNotification(env, from, to, subject, content) {
     await sendPhotoToTelegram(env, image, buildPhotoCaption(from, to, subject));
     console.log("Sent rendered email image");
   } catch (e) {
-    console.warn("Image notification failed, falling back to text...", e.message);
-    await sendNotification(env, from, to, subject, content.text);
+    const warn = `Image notification failed, falling back to text... ${e.message || e}`;
+    console.warn(warn);
+    await sendNotification(env, from, to, subject, content.text, warn);
   }
 }
 
