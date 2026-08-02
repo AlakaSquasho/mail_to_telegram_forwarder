@@ -4,6 +4,18 @@ Forward incoming emails to a Telegram bot for real-time notifications or multi-m
 
 [中文说明](./README_zh.md)
 
+## Example output
+
+In image mode (`EMAIL_OUTPUT_MODE=image`), the rendered notification is delivered either as an image (small) or as a file (large), depending on the rendered size:
+
+Delivered as an image (small):
+
+![Delivered as an image](./screenshot-image.png)
+
+Delivered as a file (large):
+
+![Delivered as a file](./screenshot-file.png)
+
 ## Cloudflare deployment and domain setup
 
 ### 1. Add the domain to Cloudflare
@@ -126,3 +138,5 @@ JSON response is also supported:
 ```
 
 If image rendering or image delivery fails, the Worker falls back to text mode automatically.
+
+> **Note:** Enabling the image render service adds a small delay before the notification arrives. The render service has to start Chromium, render the email content, take a screenshot, and upload the result. The actual delay depends on the email content, but in most cases it stays under 10 seconds.

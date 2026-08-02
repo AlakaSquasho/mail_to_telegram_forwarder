@@ -6,6 +6,18 @@
 
 - [README.md](./README.md)
 
+## 输出示例
+
+图片模式（`EMAIL_OUTPUT_MODE=image`）下，渲染结果会根据图片大小以图片（小）或文件（大）的形式发送：
+
+以图片形式发送（小）：
+
+![以图片形式发送](./screenshot-image.png)
+
+以文件形式发送（大）：
+
+![以文件形式发送](./screenshot-file.png)
+
 ## Cloudflare 部署与域名配置
 
 ### 1. 接入域名
@@ -128,3 +140,5 @@ Authorization: Bearer <EMAIL_RENDER_SERVICE_TOKEN> # 配置后才会发送
 ```
 
 如果图片渲染或发送失败，Worker 会自动回退到文字模式发送，避免通知丢失。
+
+> **注意：** 启用图片渲染后，实际收到消息会有一小部分时间的偏差。渲染服务需要启动 Chromium 渲染 + 截图 + 上传，具体耗时由邮件内容决定，大部分情况下可以在 10 秒以下。
