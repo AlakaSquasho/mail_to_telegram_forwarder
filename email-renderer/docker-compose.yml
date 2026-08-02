@@ -10,6 +10,12 @@ services:
     environment:
       - PORT=3000
       - AUTH_TOKEN=5xe62m4CGnRBRrXkYV8u5P #【必改】请修改为一个随机的长字符串
+    healthcheck:
+      test: ["CMD", "node", "-e", "const net=require('net');const socket=net.connect(3000,'127.0.0.1',()=>process.exit(0));socket.on('error',()=>process.exit(1));socket.setTimeout(3000,()=>process.exit(1));"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     # 建议加上内存限制，Chromium 相对吃内存，给 512M 足以应对偶尔的邮件渲染
     deploy:
       resources:
