@@ -10,21 +10,47 @@ const PORT = process.env.PORT || 3000;
 const AUTH_TOKEN = process.env.AUTH_TOKEN || ''; // 如果不设置则无需鉴权
 
 let browser;
+let browserPromise;
 
 // 初始化常驻浏览器实例
 async function initBrowser() {
-    browser = await puppeteer.launch({
+    browserPromise = puppeteer.launch({
+        timeout: 60000,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // 解决 Docker 内存限制导致的崩溃
+            '--disable-dev-shm-usage',
             '--disable-gpu',
-            '--no-zygote',
-            '--single-process'
+            '--no-zygote'
         ],
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
+    }).then(instance => {
+        browser = instance;
+        browser.on('disconnected', () => {
+            browser = null;
+        });
+        console.log('✅ Browser instance initialized.');
+        return browser;
+    }).finally(() => {
+        browserPromise = null;
     });
-    console.log('✅ Browser instance initialized.');
+
+    return browserPromise;
+}
+
+async function getBrowser() {
+    if (browser && browser.isConnected()) return browser;
+    if (browserPromise) return browserPromise;
+    return initBrowser();
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 // 渲染接口
@@ -41,7 +67,7 @@ app.post('/', async (req, res) => {
     const { html, text } = req.body;
     
     // 如果没有 html，则使用 text 并用 <pre> 包裹，保证纯文本也有合适的排版
-    let contentToRender = html || (text ? `<pre style="white-space: pre-wrap; word-wrap: break-word; padding: 16px; font-family: sans-serif;">${text}</pre>` : '');
+    let contentToRender = html || (text ? `<pre style="white-space: pre-wrap; word-wrap: break-word; padding: 16px; font-family: sans-serif;">${escapeHtml(text)}</pre>` : '');
 
     if (!contentToRender) {
         return res.status(400).send('Bad Request: Both html and text are empty.');
@@ -50,20 +76,30 @@ app.post('/', async (req, res) => {
     let page;
     try {
         // 3. 打开新标签页
-        page = await browser.newPage();
+        const activeBrowser = await getBrowser();
+        page = await activeBrowser.newPage();
         
         // 设置一个友好的移动端/平板宽度（对 Telegram 图片预览比较友好）
-        await page.setViewport({ 
-            width: 800, 
-            height: 600, 
+        await page.setViewport({
+            width: 800,
+            height: 600,
             // 设置高分屏渲染，避免截图模糊
             deviceScaleFactor: 2
         });
+        await page.setJavaScriptEnabled(false);
+        await page.setRequestInterception(true);
+        page.on('request', request => {
+            if (request.isNavigationRequest() || request.url().startsWith('data:')) {
+                request.continue();
+            } else {
+                request.abort();
+            }
+        });
 
         // 4. 注入 HTML 内容，等待内容加载完毕 (最多等 10 秒，避免死锁)
-        await page.setContent(contentToRender, { 
-            waitUntil: 'networkidle2', // 等待网络请求基本结束（允许有少量如跟踪像素失败）
-            timeout: 10000 
+        await page.setContent(contentToRender, {
+            waitUntil: 'domcontentloaded',
+            timeout: 10000
         });
 
         // ================= 优雅修复：等待 Web 字体加载 =================
@@ -102,10 +138,15 @@ app.post('/', async (req, res) => {
 });
 
 // 优雅退出
-process.on('SIGINT', async () => {
-    if (browser) await browser.close();
+async function closeBrowser() {
+    if (browser) {
+        await browser.close().catch(e => console.error('Failed to close browser:', e));
+    }
     process.exit(0);
-});
+}
+
+process.on('SIGINT', closeBrowser);
+process.on('SIGTERM', closeBrowser);
 
 // 启动服务
 initBrowser().then(() => {
