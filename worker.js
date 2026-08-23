@@ -500,8 +500,10 @@ function getRealRecipientEmail(message) {
 }
 
 function getHeaderValue(block, name) {
+  // RFC 5322: 折叠头（续行以空格/Tab 开头）先展开为单行，否则 boundary 等多行属性取不到
+  const unfolded = block.replace(/\r?\n[ \t]+/g, " ");
   const regex = new RegExp(`^${name}:\\s*(.+)`, "im");
-  const match = block.match(regex);
+  const match = unfolded.match(regex);
   return match ? match[1].trim() : null;
 }
 
