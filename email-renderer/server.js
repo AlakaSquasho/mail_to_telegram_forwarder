@@ -83,15 +83,28 @@ function escapeHtml(value) {
 
 // 页面统一设置：
 // - 关闭 JS，只做静态排版，防止邮件里的脚本干扰渲染
-// - 通过 CDP 在“发起请求前”就屏蔽所有 http(s) 子资源。
-//   相比 page.setRequestInterception + request.abort()，这种方式不会在 CDP 通道里
-//   制造海量“被拦截/被中止”的请求——大量 abort 正是 puppeteer 偶发
-//   `Navigation timeout`（setContent 卡死）的常见诱因之一。
+// - 用 request interception 屏蔽会拖慢/卡住渲染的外部资源（CSS/字体/脚本），
+//   但保留远程图片正常加载。
+//   之前用 Network.setBlockedURLs 把 http(s) 全部屏蔽，邮件 HTML 里远程引用的
+//   图片（logo、插图等）也被一起屏蔽，导致渲染出的邮件图里这些位置全是破图“？”。
+//   CSS/字体/脚本会阻塞 DOMContentLoaded/首屏，图片不会，所以只拦这几类即可，
+//   需要 abort 的请求数量很少，不会像以前那样制造大量被中止的请求。
 async function setupPage(page) {
     await page.setJavaScriptEnabled(false);
-    const client = await page.createCDPSession();
-    await client.send('Network.enable');
-    await client.send('Network.setBlockedURLs', { urls: ['http://*', 'https://*'] });
+    await page.setRequestInterception(true);
+    page.on('request', request => {
+        // 导航请求与 data: URI（内联 base64 图片等）一律放行
+        if (request.isNavigationRequest() || request.url().startsWith('data:')) {
+            request.continue();
+            return;
+        }
+        const type = request.resourceType();
+        if (type === 'stylesheet' || type === 'font' || type === 'script') {
+            request.abort();
+        } else {
+            request.continue();
+        }
+    });
 }
 
 // 等待页面字体加载完成，最多 3 秒，超时则放弃等待使用后备字体
@@ -100,6 +113,24 @@ async function waitForFonts(page) {
         page.evaluate(() => document.fonts.ready),
         new Promise(resolve => setTimeout(resolve, 3000))
     ]);
+}
+
+// 等待远程图片加载完成，最多 12 秒，超时则放弃。
+// domcontentloaded 之后立刻截图会截到还没开始加载（或没加载完）的图片，显示为破图，
+// 所以截图前要等图片 complete；对个别一直连不上的图片用 deadline 兜底，避免卡死。
+async function waitForImages(page) {
+    const deadline = Date.now() + 12000;
+    for (;;) {
+        const pending = await page.evaluate(() =>
+            Array.from(document.images).filter(img => !img.complete).length
+        );
+        if (pending === 0) return;
+        if (Date.now() >= deadline) {
+            console.log(`⏳ Image load wait timed out with ${pending} image(s) still pending.`);
+            return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+    }
 }
 
 // 渲染一张邮件图片
@@ -122,6 +153,9 @@ async function renderEmail(contentToRender) {
         });
 
         await waitForFonts(page);
+
+        // 截图前等远程图片加载完成（否则邮件里的图片显示为破图）
+        await waitForImages(page);
 
         // 强制白色背景（有些邮件 HTML 没写背景色，默认透明会导致文字看不清）
         await page.evaluate(() => {
