@@ -12,9 +12,18 @@ const AUTH_TOKEN = process.env.AUTH_TOKEN || ''; // 如果不设置则无需鉴�
 let browser;   // 当前可用的浏览器实例
 let launching; // 正在启动浏览器时的 Promise（避免并发重复 launch）
 
+// 判断浏览器实例是否仍处于连接状态。
+// puppeteer v25 已把 `browser.isConnected()` 方法移除、改成 `browser.connected` getter，
+// 这里两种都兼容，避免按 "latest" 装上新版 puppeteer 后直接抛 TypeError。
+function isBrowserConnected(b) {
+    if (typeof b.connected === 'boolean') return b.connected;
+    if (typeof b.isConnected === 'function') return b.isConnected();
+    return true;
+}
+
 // 获取（或启动）常驻浏览器实例
 async function getBrowser() {
-    if (browser && browser.isConnected()) return browser;
+    if (browser && isBrowserConnected(browser)) return browser;
     if (launching) return launching;
 
     launching = puppeteer.launch({
@@ -171,9 +180,32 @@ async function closeBrowser() {
 process.on('SIGINT', closeBrowser);
 process.on('SIGTERM', closeBrowser);
 
+// 启动前冒烟自检：真实开页并渲染一次，确认 puppeteer API 与浏览器实例可用。
+// 这类运行时问题（例如新版 puppeteer 移除 isConnected、浏览器起不来）此前要等第一封
+// 邮件到达才暴露；自检让它们在启动阶段就报错并退出，由 docker 自动重启策略处理。
+async function smokeTest() {
+    const activeBrowser = await getBrowser();
+    const page = await activeBrowser.newPage();
+    try {
+        await page.setViewport({ width: 800, height: 600, deviceScaleFactor: 2 });
+        await setupPage(page);
+        await page.setContent('<h1>smoke test</h1>', { waitUntil: 'domcontentloaded' });
+        const buf = await page.screenshot({ fullPage: true, type: 'png' });
+        if (!buf || buf.length === 0) {
+            throw new Error('smoke test produced an empty screenshot');
+        }
+    } finally {
+        await page.close().catch(() => {});
+    }
+}
+
 // 启动服务
-getBrowser().then(() => {
+smokeTest().then(() => {
+    console.log('✅ Smoke test passed: browser can open a page and render.');
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`🚀 Email Render Service is running on port ${PORT}`);
     });
+}).catch(err => {
+    console.error('❌ Startup self-check failed:', err);
+    process.exit(1);
 });
